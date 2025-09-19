@@ -15,9 +15,8 @@ Express + Vanilla JS로 만든 깃허브 커밋 뷰어/AI 분석기.
 - Google Gemini API 키
 
 ## 설치
-```bash
+```
 git clone <your-fork-url>
-cd express-axios-app
 npm install
 ```
 
@@ -28,7 +27,6 @@ PORT=3000
 GITHUB_TOKEN=ghp_xxx
 
 # 필수: Google Gemini API 키
-GEMINI_API_KEY=AIzaSyXXXX...
 ```
 
 ## 실행
