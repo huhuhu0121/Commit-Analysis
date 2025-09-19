@@ -1,0 +1,439 @@
+<!doctype html>
+<html lang="ko">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>GitHub 커밋 분석기</title>
+    <link rel="stylesheet" href="styles.css">
+  </head>
+  <body>
+    <div class="container">
+      <div class="header">
+        <h1>🚀 GitHub 커밋 분석기</h1>
+        <p>AI로 커밋 히스토리를 분석하고 개선점을 찾아보세요</p>
+      </div>
+
+      <div class="content">
+        <div class="form-section">
+          <div class="form-group">
+            <label for="repoUrl">📁 GitHub 리포지토리 URL</label>
+            <input id="repoUrl" type="text" placeholder="https://github.com/owner/repo" />
+            <div class="muted">공개 저장소는 토큰 없이도 가능하나, 속도/쿼터 관점에서 서버에 GITHUB_TOKEN 설정을 권장합니다.</div>
+          </div>
+
+          <div class="form-group">
+            <label for="branch">🌿 브랜치 선택</label>
+            <select id="branch">
+              <option value="">기본 브랜치 (main/master)</option>
+            </select>
+            <div class="muted">브랜치를 선택하면 해당 브랜치의 커밋만 조회됩니다.</div>
+          </div>
+
+          
+
+          <div class="button-group">
+            <button id="loadCommits" class="btn-primary">📥 커밋 불러오기</button>
+          </div>
+        </div>
+
+        <div class="commits-section" id="commitsSection" style="display: none;">
+          <div class="commits-header">
+            <div class="commits-title">📋 커밋 목록</div>
+            <div class="pagination" id="pagination"></div>
+          </div>
+          <div id="commits"></div>
+        </div>
+
+        
+      </div>
+    </div>
+
+    <!-- 커밋 상세 모달 -->
+    <div id="commitModal" class="modal" style="display: none;">
+      <div class="modal-content">
+        <div class="modal-header">
+          <h2>📋 커밋 상세 내역</h2>
+          <button class="modal-close" onclick="closeCommitModal()">&times;</button>
+        </div>
+        <div class="modal-body" id="commitModalBody">
+          <!-- 커밋 상세 내용이 여기에 표시됩니다 -->
+        </div>
+      </div>
+    </div>
+
+    <script>
+      const $ = (id) => document.getElementById(id);
+      let lastCommits = [];
+      let currentPage = 1;
+      let paginationInfo = null;
+      let currentRepoUrl = '';
+      const API_BASE = 'http://localhost:3000';
+
+      async function loadBranches() {
+        const repoUrl = $('repoUrl').value.trim();
+        if (!repoUrl) return;
+        
+        try {
+          const url = `${API_BASE}/api/branches?repoUrl=${encodeURIComponent(repoUrl)}`;
+          const res = await fetch(url);
+          if (!res.ok) throw new Error(`HTTP ${res.status}`);
+          const data = await res.json();
+          
+          const branchSelect = $('branch');
+          branchSelect.innerHTML = '<option value="">기본 브랜치 (main/master)</option>';
+          
+          data.branches.forEach(branch => {
+            const option = document.createElement('option');
+            option.value = branch.name;
+            option.textContent = `${branch.name}${branch.protected ? ' 🔒' : ''}`;
+            branchSelect.appendChild(option);
+          });
+          
+        } catch (err) {
+          console.error('브랜치 로딩 실패:', err);
+        }
+      }
+
+      async function fetchCommits(page = 1) {
+        const repoUrl = $('repoUrl').value.trim();
+        if (!repoUrl) { 
+          alert('리포지토리 URL을 입력하세요.'); 
+          return; 
+        }
+        
+        currentRepoUrl = repoUrl;
+        const branch = $('branch').value;
+        let url = `${API_BASE}/api/commits?repoUrl=${encodeURIComponent(repoUrl)}&per_page=10&page=${page}`;
+        if (branch) url += `&branch=${encodeURIComponent(branch)}`;
+        
+        $('loadCommits').disabled = true;
+        $('loadCommits').classList.add('loading');
+        $('commits').innerHTML = '<div class="empty-state">로딩 중...</div>';
+        
+        try {
+          const res = await fetch(url);
+          if (!res.ok) throw new Error(`HTTP ${res.status}`);
+          const data = await res.json();
+          
+          lastCommits = data.commits || [];
+          paginationInfo = data.pagination;
+          currentPage = page;
+          
+          $('commitsSection').style.display = lastCommits.length > 0 ? 'block' : 'none';
+          
+          renderCommits();
+          renderPagination();
+          
+        } catch (err) {
+          $('commits').innerHTML = `<div class="error">에러: ${err.message}</div>`;
+        } finally {
+          $('loadCommits').disabled = false;
+          $('loadCommits').classList.remove('loading');
+        }
+      }
+
+      function renderCommits() {
+        if (lastCommits.length === 0) {
+          $('commits').innerHTML = '<div class="empty-state">커밋이 없습니다.</div>';
+          return;
+        }
+
+        $('commits').innerHTML = lastCommits.map(c => `
+          <div class="commit-card" onclick="showCommitDetail('${c.sha}')" style="cursor: pointer;">
+            <div class="commit-header">
+              <div class="commit-sha">${(c.sha||'').slice(0,7)}</div>
+              <div class="commit-date">${formatDate(c.date)}</div>
+            </div>
+            <div class="commit-author">👤 ${c.authorName || 'Unknown'}</div>
+            <div class="commit-message">${escapeHtml(c.message || '')}</div>
+            <div style="display: flex; justify-content: space-between; align-items: center; margin-top: 10px;">
+              <span style="color: #667eea; font-size: 0.9rem;">📋 클릭하여 상세 보기</span>
+              <a href="${c.url}" target="_blank" rel="noreferrer noopener" class="commit-link" onclick="event.stopPropagation()">
+                🔗 GitHub에서 보기 →
+              </a>
+            </div>
+          </div>
+        `).join('');
+      }
+
+      function renderPagination() {
+        if (!paginationInfo) return;
+        
+        const { currentPage, hasNext, hasPrev, totalPages } = paginationInfo;
+        const pagination = $('pagination');
+        
+        pagination.innerHTML = `
+          <button ${!hasPrev ? 'disabled' : ''} onclick="fetchCommits(${currentPage - 1})" class="btn-primary">
+            ← 이전
+          </button>
+          <div class="page-info">${currentPage} / ${totalPages}</div>
+          <button ${!hasNext ? 'disabled' : ''} onclick="fetchCommits(${currentPage + 1})" class="btn-primary">
+            다음 →
+          </button>
+        `;
+      }
+
+      
+
+      function formatDate(dateString) {
+        if (!dateString) return '';
+        const date = new Date(dateString);
+        return date.toLocaleDateString('ko-KR', {
+          year: 'numeric',
+          month: 'short',
+          day: 'numeric',
+          hour: '2-digit',
+          minute: '2-digit'
+        });
+      }
+
+      function escapeHtml(text) {
+        const div = document.createElement('div');
+        div.textContent = text;
+        return div.innerHTML;
+      }
+
+      async function showCommitDetail(sha) {
+        if (!currentRepoUrl) return;
+        
+        const modal = $('commitModal');
+        const modalBody = $('commitModalBody');
+        
+        modal.style.display = 'flex';
+        modalBody.innerHTML = '<div class="empty-state">로딩 중...</div>';
+        
+        try {
+          const url = `${API_BASE}/api/commit-detail?repoUrl=${encodeURIComponent(currentRepoUrl)}&sha=${sha}`;
+          const res = await fetch(url);
+          if (!res.ok) throw new Error(`HTTP ${res.status}`);
+          const data = await res.json();
+          
+          const commit = data.commit;
+          modalBody.innerHTML = `
+            <div class="commit-detail">
+              <div class="commit-detail-header">
+                <div class="commit-sha-large">${commit.sha.slice(0,7)}</div>
+                <div class="commit-date">${formatDate(commit.author.date)}</div>
+              </div>
+              
+              <div class="commit-message-large">${escapeHtml(commit.message)}</div>
+              
+              <div class="commit-author-info">
+                ${commit.author.avatar ? `<img src="${commit.author.avatar}" alt="Avatar" class="author-avatar">` : '<div class="author-avatar" style="background: #667eea; display: flex; align-items: center; justify-content: center; color: white; font-weight: bold;">👤</div>'}
+                <div class="author-details">
+                  <h4>${commit.author.name || commit.author.login || 'Unknown'}</h4>
+                  <p>${commit.author.email || ''}</p>
+                  <p>${commit.author.login ? `@${commit.author.login}` : ''}</p>
+                </div>
+              </div>
+              
+              ${commit.stats ? `
+                <div class="commit-stats">
+                  <div class="stat-item">
+                    <span class="stat-number additions">+${commit.stats.additions}</span>
+                    <span class="stat-label">추가</span>
+                  </div>
+                  <div class="stat-item">
+                    <span class="stat-number deletions">-${commit.stats.deletions}</span>
+                    <span class="stat-label">삭제</span>
+                  </div>
+                  <div class="stat-item">
+                    <span class="stat-number changes">${commit.stats.total}</span>
+                    <span class="stat-label">총 변경</span>
+                  </div>
+                </div>
+              ` : ''}
+              
+              ${commit.files && commit.files.length > 0 ? `
+                <div class="commit-files">
+                  <div class="files-title">📁 변경된 파일 (${commit.files.length}개)</div>
+                  ${commit.files.map(file => `
+                    <div class="file-item">
+                      <div class="file-name">${file.filename}</div>
+                      <div class="file-stats">
+                        <span class="file-status status-${file.status}">${file.status}</span>
+                        ${file.additions > 0 ? `<span class="additions">+${file.additions}</span>` : ''}
+                        ${file.deletions > 0 ? `<span class="deletions">-${file.deletions}</span>` : ''}
+                        <span class="changes">${file.changes} 변경</span>
+                      </div>
+                      ${file.patch ? `
+                        <button class="code-toggle" onclick="toggleCodeDiff('${file.filename.replace(/[^a-zA-Z0-9]/g, '_')}')">
+                          📝 코드 변경사항 보기
+                        </button>
+                        <div class="code-diff collapsed" id="diff_${file.filename.replace(/[^a-zA-Z0-9]/g, '_')}">
+                          <div class="code-diff-header">
+                            ${file.filename} - ${file.additions} 추가, ${file.deletions} 삭제
+                          </div>
+                          <div class="code-diff-content">
+                            ${parsePatch(file.patch)}
+                          </div>
+                        </div>
+                      ` : ''}
+                    </div>
+                  `).join('')}
+                </div>
+              ` : ''}
+              
+              <div style="margin-top: 20px; text-align: center;">
+                <a href="${commit.url}" target="_blank" rel="noreferrer noopener" class="commit-link">
+                  🔗 GitHub에서 전체 보기 →
+                </a>
+              </div>
+              
+              <div class="commit-analysis-section">
+                <div class="analysis-title">AI 분석</div>
+                <div class="analysis-controls">
+                  <select id="modalAnalysisMode" class="analysis-mode-select">
+                    <option value="summary">📊 요약 분석</option>
+                    <option value="feedback">💡 피드백 분석</option>
+                  </select>
+                  <button class="btn-secondary" onclick="analyzeSingleCommit('${commit.sha}')">
+                    이 커밋 분석하기
+                  </button>
+                </div>
+                <div id="modalAnalysisResult" class="analysis-result" style="display: none;"></div>
+              </div>
+            </div>
+          `;
+          
+        } catch (err) {
+          modalBody.innerHTML = `<div class="error">에러: ${err.message}</div>`;
+        }
+      }
+
+      function closeCommitModal() {
+        $('commitModal').style.display = 'none';
+      }
+
+      function parsePatch(patch) {
+        if (!patch) return '';
+        
+        const lines = patch.split('\n');
+        let result = '';
+        let oldLineNum = 0;
+        let newLineNum = 0;
+        
+        for (let i = 0; i < lines.length; i++) {
+          const line = lines[i];
+          
+          if (line.startsWith('@@')) {
+            // 헤더 라인: @@ -oldStart,oldCount +newStart,newCount @@
+            const match = line.match(/@@ -(\d+),?(\d*) \+(\d+),?(\d*) @@/);
+            if (match) {
+              oldLineNum = parseInt(match[1]);
+              newLineNum = parseInt(match[3]);
+            }
+            result += `<div class="diff-line diff-line-context">
+              <div class="diff-line-number">...</div>
+              <div class="diff-line-content">${escapeHtml(line)}</div>
+            </div>`;
+          } else if (line.startsWith('+')) {
+            // 추가된 라인
+            result += `<div class="diff-line diff-line-added">
+              <div class="diff-line-number">${newLineNum}</div>
+              <div class="diff-line-content">${escapeHtml(line.substring(1))}</div>
+            </div>`;
+            newLineNum++;
+          } else if (line.startsWith('-')) {
+            // 삭제된 라인
+            result += `<div class="diff-line diff-line-deleted">
+              <div class="diff-line-number">${oldLineNum}</div>
+              <div class="diff-line-content">${escapeHtml(line.substring(1))}</div>
+            </div>`;
+            oldLineNum++;
+          } else if (line.startsWith('\\')) {
+            // 백슬래시로 시작하는 특수 라인 (파일 끝 등)
+            result += `<div class="diff-line diff-line-context">
+              <div class="diff-line-number"></div>
+              <div class="diff-line-content">${escapeHtml(line)}</div>
+            </div>`;
+          } else {
+            // 컨텍스트 라인 (변경 없음)
+            result += `<div class="diff-line diff-line-context">
+              <div class="diff-line-number">${oldLineNum}</div>
+              <div class="diff-line-content">${escapeHtml(line)}</div>
+            </div>`;
+            oldLineNum++;
+            newLineNum++;
+          }
+        }
+        
+        return result;
+      }
+
+      function toggleCodeDiff(fileId) {
+        const diffElement = document.getElementById(`diff_${fileId}`);
+        if (diffElement) {
+          diffElement.classList.toggle('collapsed');
+          const button = diffElement.previousElementSibling;
+          if (diffElement.classList.contains('collapsed')) {
+            button.textContent = '📝 코드 변경사항 보기';
+          } else {
+            button.textContent = '📝 코드 변경사항 숨기기';
+          }
+        }
+      }
+
+      async function analyzeSingleCommit(sha) {
+        const mode = document.getElementById('modalAnalysisMode').value;
+        const resultDiv = document.getElementById('modalAnalysisResult');
+        const button = event.target;
+        
+        button.disabled = true;
+        button.classList.add('loading');
+        resultDiv.style.display = 'block';
+        resultDiv.textContent = '🤖 AI가 분석 중입니다...';
+        
+        try {
+          const res = await fetch(`${API_BASE}/api/commit-analysis`, {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ 
+              mode, 
+              repoUrl: currentRepoUrl,
+              commits: [{ 
+                sha: sha,
+                authorName: lastCommits.find(c => c.sha === sha)?.authorName || 'Unknown',
+                message: lastCommits.find(c => c.sha === sha)?.message || '',
+                date: lastCommits.find(c => c.sha === sha)?.date || ''
+              }],
+              singleCommit: true
+            })
+          });
+          
+          if (!res.ok) throw new Error(`HTTP ${res.status}`);
+          const data = await res.json();
+          resultDiv.textContent = data.result || '(빈 응답)';
+          
+        } catch (err) {
+          resultDiv.textContent = `❌ 에러: ${err.message}`;
+        } finally {
+          button.disabled = false;
+          button.classList.remove('loading');
+        }
+      }
+
+      // 이벤트 리스너
+      $('loadCommits').addEventListener('click', () => fetchCommits(1));
+      
+      
+      // Enter 키로 커밋 불러오기
+      $('repoUrl').addEventListener('keypress', (e) => {
+        if (e.key === 'Enter') {
+          loadBranches();
+          fetchCommits(1);
+        }
+      });
+      
+      // URL 입력 시 브랜치 자동 로딩
+      $('repoUrl').addEventListener('blur', loadBranches);
+      
+      // 모달 외부 클릭 시 닫기
+      $('commitModal').addEventListener('click', (e) => {
+        if (e.target === $('commitModal')) {
+          closeCommitModal();
+        }
+      });
+    </script>
+  </body>
+</html>
