@@ -234,8 +234,9 @@ app.post('/api/commit-analysis', async (req, res) => {
   }
 
   try {
-    const genAI = new GoogleGenerativeAI(process.env.GEMINI_API_KEY);
-    const model = genAI.getGenerativeModel({ model: 'gemini-1.5-flash' });
+    const genAI = new GoogleGenerativeAI(process.env.GEMINI_API_KEY, { apiVersion: 'v1beta' });
+    const model = genAI.getGenerativeModel({ model: 'gemini-2.0-flash' });
+    
 
     let commitList;
     let instructions;
@@ -269,44 +270,60 @@ app.post('/api/commit-analysis', async (req, res) => {
       const commitResponse = await axios.get(commitApi, { headers });
       const commitData = commitResponse.data;
 
-      // 파일별 변경사항 요약 생성 (더 상세한 코드 디프 포함)
+      // 파일별 변경사항 요약 생성 (더 상세한 코드 디프 포함) + 안전한 길이 제한
       let fileChanges = '';
       if (commitData.files && commitData.files.length > 0) {
         fileChanges = '\n\n변경된 파일들과 코드 변경사항:\n';
-        commitData.files.forEach(file => {
-          fileChanges += `\n파일: ${file.filename} (${file.status}): +${file.additions} -${file.deletions}\n`;
-          
-          // 패치 데이터를 더 상세하게 포함
+        const MAX_PROMPT_CHARS = 8000; // 전체 프롬프트 안전 상한
+        const MAX_FILES = 20; // 너무 많은 파일 시 잘라냄
+        const files = commitData.files.slice(0, MAX_FILES);
+
+        for (const file of files) {
+          // 파일 헤더 추가
+          let nextChunk = `\n파일: ${file.filename} (${file.status}): +${file.additions} -${file.deletions}\n`;
+          if ((fileChanges + nextChunk).length > MAX_PROMPT_CHARS) break;
+          fileChanges += nextChunk;
+
           if (file.patch) {
-            // 패치를 라인별로 파싱하여 더 읽기 쉽게 정리
             const patchLines = file.patch.split('\n');
             let codeChanges = '';
-            let contextLines = 0;
-            
-            for (let i = 0; i < patchLines.length && contextLines < 50; i++) {
+            let emitted = 0;
+            const MAX_DIFF_LINES = 80; // 파일당 최대 라인 수
+
+            for (let i = 0; i < patchLines.length && emitted < MAX_DIFF_LINES; i++) {
               const line = patchLines[i];
               if (line.startsWith('@@')) {
                 codeChanges += `\n[변경 영역] ${line}\n`;
               } else if (line.startsWith('+')) {
                 codeChanges += `+ ${line.substring(1)}\n`;
-                contextLines++;
+                emitted++;
               } else if (line.startsWith('-')) {
                 codeChanges += `- ${line.substring(1)}\n`;
-                contextLines++;
+                emitted++;
               } else if (line.startsWith(' ') || line.startsWith('\\')) {
-                // 컨텍스트 라인은 일부만 포함
-                if (contextLines < 20) {
-                  codeChanges += `  ${line.substring(1)}\n`;
-                  contextLines++;
+                // 컨텍스트 라인은 간략히
+                if (emitted < MAX_DIFF_LINES) {
+                  codeChanges += `  ${line.replace(/^ /, '')}\n`;
+                  emitted++;
                 }
               }
+              if ((fileChanges + codeChanges).length > MAX_PROMPT_CHARS) break;
             }
-            
+
             if (codeChanges.trim()) {
-              fileChanges += `코드 변경사항:\n${codeChanges}\n`;
+              nextChunk = `코드 변경사항:\n${codeChanges}\n`;
+              if ((fileChanges + nextChunk).length > MAX_PROMPT_CHARS) break;
+              fileChanges += nextChunk;
             }
           }
-        });
+
+          if (fileChanges.length > MAX_PROMPT_CHARS) break;
+        }
+
+        // 너무 길어 잘린 경우 표시
+        if ((commitData.files.length > MAX_FILES) || fileChanges.length > MAX_PROMPT_CHARS) {
+          fileChanges += '\n(일부 파일/라인은 길이 제한으로 생략되었습니다)\n';
+        }
       }
 
       commitList = `커밋: ${commitData.sha?.slice(0,7) || ''}
@@ -333,15 +350,18 @@ app.post('/api/commit-analysis', async (req, res) => {
 
     const prompt = `${instructions}\n\n${singleCommit ? '커밋 정보:' : '커밋 목록:'}\n${commitList}`;
 
+    // 모델 호출
     const result = await model.generateContent(prompt);
     const text = result.response.text();
     res.json({ mode, result: text, singleCommit });
   } catch (error) {
+    console.error('Gemini 분석 실패:', error?.response?.data || error?.message || error);
     const status = 500;
-    res.status(status).json({ message: 'Gemini 분석 실패', status, detail: error.message });
+    res.status(status).json({ message: 'Gemini 분석 실패', status, detail: error?.response?.data || error?.message || 'Unknown error' });
   }
 });
 
 app.listen(port, () => {
   console.log(`Server listening on http://localhost:${port}`);
 });
+
